@@ -17,6 +17,7 @@ int lz_pick_zone(LZRect work, const LZRect *zones, int count, int x, int y);
 void lz_custom_default(LZCustom *c);
 int lz_custom_validate(const LZCustom *c);
 int lz_custom_zones(LZRect work, const LZCustom *c, int gap, LZRect out[LZ_MAX_ZONES], int ids[LZ_MAX_ZONES]);
+/* On success, return the new selected leaf ID. On failure, return -1. */
 int lz_custom_split(LZCustom *c,int leafId,int orientation);
 int lz_custom_merge(LZCustom *c,int leafId);
 int lz_custom_set_ratio(LZCustom *c,int nodeId,int basisPoints);

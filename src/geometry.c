@@ -130,55 +130,57 @@ int lz_custom_zones(LZRect work,const LZCustom *c,int gap,LZRect out[LZ_MAX_ZONE
     if(!out||work.right<=work.left||work.bottom<=work.top||!lz_custom_validate(c))return 0;
     return zones_visit(work,work,c,0,clampi(gap,0,40),out,ids,0);
 }
-static int leaves_count(const LZCustom *c) {
-    LZRect out[LZ_MAX_ZONES];
-    return lz_custom_zones((LZRect){0,0,1000,1000},c,0,out,0);
-}
 /* Compact before allocating so repeated edits never exhaust node slots. */
-static int clone_compact(const LZCustom *old,LZCustom *fresh,int id) {
+static int clone_compact(const LZCustom *old,LZCustom *fresh,int id,int selected,int *mapped) {
     int dst=fresh->count++;
+    if(id==selected)*mapped=dst;
     LZNode n=old->nodes[id];
     fresh->nodes[dst]=n;
     if(n.split) {
-        int first=clone_compact(old,fresh,n.left);
-        int second=clone_compact(old,fresh,n.right);
+        int first=clone_compact(old,fresh,n.left,selected,mapped);
+        int second=clone_compact(old,fresh,n.right,selected,mapped);
         fresh->nodes[dst].left=first;
         fresh->nodes[dst].right=second;
     }
     return dst;
 }
-static void compact(LZCustom *c) {
+static int compact(LZCustom *c,int selected) {
     LZCustom t={0};
-    clone_compact(c,&t,0);
+    int mapped=-1;
+    clone_compact(c,&t,0,selected,&mapped);
     *c=t;
+    return mapped;
 }
 int lz_custom_split(LZCustom *c,int leafId,int orientation) {
-    if(!lz_custom_validate(c)||leafId<0||leafId>=c->count||c->nodes[leafId].split ||(orientation!=1&&orientation!=2))return 0;
-    if(leaves_count(c)>=LZ_MAX_ZONES)return 0;
-    /* Preserve the selected index by splitting first and compacting afterwards. */
-    if(c->count+2>LZ_MAX_NODES) {
-        compact(c);
-        /* Caller-provided IDs cannot survive compaction; all reachable trees
-           with <=12 leaves use <=23 nodes, so this path is not needed. */
-        return 0;
-    }
+    if(!lz_custom_validate(c)||(orientation!=1&&orientation!=2))return -1;
+    int ids[LZ_MAX_ZONES];
+    LZRect zones[LZ_MAX_ZONES];
+    int count=lz_custom_zones((LZRect){0,0,1000,1000},c,0,zones,ids);
+    if(count>=LZ_MAX_ZONES)return -1;
+    int i=0;
+    while(i<count && ids[i]!=leafId)i++;
+    if(i==count)return -1;
+    if(c->count+2>LZ_MAX_NODES)leafId=compact(c,leafId);
     int a=c->count++,b=c->count++;
     c->nodes[a]=(LZNode){0,0,0,5000};c->nodes[b]=c->nodes[a];
     c->nodes[leafId]=(LZNode){a,b,orientation,5000};
-    return 1;
+    return a;
 }
-static int find_parent(const LZCustom *c,int child) {
-    for(int i=0;i<c->count;i++) if(c->nodes[i].split&&(c->nodes[i].left==child||c->nodes[i].right==child))return i;
-    return -1;
+static int find_parent(const LZCustom *c,int id,int child) {
+    const LZNode *n=&c->nodes[id];
+    if(!n->split)return -1;
+    if(n->left==child||n->right==child)return id;
+    int parent=find_parent(c,n->left,child);
+    return parent>=0?parent:find_parent(c,n->right,child);
 }
 int lz_custom_merge(LZCustom *c,int leafId) {
-    if(!lz_custom_validate(c)||leafId<0||leafId>=c->count||c->nodes[leafId].split)return 0;
-    int parent=find_parent(c,leafId);
-    if(parent<0)return 0;
+    if(!lz_custom_validate(c)||leafId<0||leafId>=c->count||c->nodes[leafId].split)return -1;
+    int parent=find_parent(c,0,leafId);
+    if(parent<0)return -1;
     int sibling=c->nodes[parent].left==leafId?c->nodes[parent].right:c->nodes[parent].left;
-    if(c->nodes[sibling].split)return 0;
+    if(c->nodes[sibling].split)return -1;
     c->nodes[parent]=(LZNode){0,0,0,5000};
-    compact(c);return 1;
+    return compact(c,parent);
 }
 int lz_custom_set_ratio(LZCustom *c,int nodeId,int basisPoints) {
     if(!lz_custom_validate(c)||nodeId<0||nodeId>=c->count||!c->nodes[nodeId].split)return 0;

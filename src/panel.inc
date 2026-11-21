@@ -79,6 +79,7 @@ static void panelBuild(PanelFace *p) {
         panelAdd(p,L"系统预设",LZ_VIEW_BUILTINS,0);
         panelAdd(p,L"我的自定义布局",LZ_VIEW_PROFILES,0);
         panelAdd(p,L"编辑当前布局…",LZ_VIEW_EDITOR,0);
+        panelAdd(p,L"在此显示器启用吸附",CMD_MONITOR_SNAP_BASE+p->monitor,g_displays[p->monitor].snapEnabled);
     } else if(p->page==LZ_PANEL_BUILTINS) {
         copyW(p->title,80,L"系统预设");
         copyW(p->subtitle,110,L"当前显示器独立保存");

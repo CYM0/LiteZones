@@ -18,13 +18,13 @@ static void forgetMonitor(const wchar_t *name) {
 static void pruneDeadPlacements(void) {
     for(int i=0;i<MAX_PLACEMENTS;i++) {
         LZMember *p=&g_book.members[i];
-        if(p->id&&!IsWindow(idWindow(p->id)))p->id=0;
+        if(p->id&&(!IsWindow(idWindow(p->id))||windowOnExcludedDisplay(idWindow(p->id))))p->id=0;
     }
 }
 static int knownSource(HWND hwnd,int *mi,int *zi) {
     int slot=placeSlot(hwnd);
     if(slot<0)return 0;
-    if(!IsWindow(hwnd)) {forgetWindow(hwnd);return 0;}
+    if(!IsWindow(hwnd)||windowOnExcludedDisplay(hwnd)) {forgetWindow(hwnd);return 0;}
     int m=g_book.members[slot].monitor,z=g_book.members[slot].zone;
     if(m>=0&&m<g_displayCount&&z>=0&&z<g_displays[m].count) {
         *mi=m;*zi=z;return 1;
@@ -47,7 +47,7 @@ typedef struct {LZWindowID ids[MAX_PLACEMENTS]; int count;} LZOrderView;
 static BOOL WINCALL collectManagedZ(HWND hwnd,LPARAM user) {
     LZOrderView *v=(LZOrderView*)(UINT_PTR)user;
     if(v->count>=MAX_PLACEMENTS)return 0;
-    if(placeSlot(hwnd)>=0 && IsWindowVisible(hwnd) && !IsIconic(hwnd))
+    if(placeSlot(hwnd)>=0 && IsWindowVisible(hwnd) && !IsIconic(hwnd) && !windowOnExcludedDisplay(hwnd))
         v->ids[v->count++]=windowId(hwnd);
     return 1;
 }

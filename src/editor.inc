@@ -4,7 +4,9 @@ static int e_monitor=-1,e_profile=0,e_selected=0,e_divider=-1,e_hoverDivider=-1;
 static LZRect e_dragParent;
 static LZCustom e_layout;
 static int e_w=1070,e_h=740;
-static int e_toolbarX=0,e_toolbarW=0;
+static int e_toolbarX=0,e_toolbarY=0,e_toolbarW=0,e_toolbarH=0,e_toolbarBottom=0;
+static int e_pressed=-1;
+#define LZ_EDITOR_WIDE_TOOLBAR 860
 static HWND e_nameEdit=(HWND)0,e_widthEdit=(HWND)0,e_heightEdit=(HWND)0;
 static HWND g_editorTools=(HWND)0;
 /* Independent opaque foreground for zone size labels. The underlying editor
@@ -14,10 +16,8 @@ static HWND g_editorLabels=(HWND)0;
 static const wchar_t kClassEditorLabels[]=L"LiteZonesEditorZoneLabels";
 static HGDIOBJ e_zoneNameFont=(HGDIOBJ)0,e_zoneSizeFont=(HGDIOBJ)0;
 static const wchar_t kClassEditorTools[]=L"LiteZonesEditorFloatingTools";
-#define LZ_EDITOR_TOOLS_Y 22
-#define LZ_EDITOR_TOOLS_H 233
 static int e_pendingPaint=0;
-static wchar_t e_notice[160]=L"选择一个区域，然后拆分；拖动粉色手柄可以修改宽度和高度。";
+static wchar_t e_notice[160];
 static HDC e_bufferDC=(HDC)0;
 static HGDIOBJ e_bufferBitmap=(HGDIOBJ)0,e_bufferOld=(HGDIOBJ)0;
 static int e_bufferW=0,e_bufferH=0;
@@ -27,9 +27,9 @@ static void editorInvalidate(void);
 #define WM_SETFONT 0x0030u
 #define WS_VISIBLE 0x10000000u
 #define WS_CLIPCHILDREN 0x02000000u
-#define WS_BORDER 0x00800000u
 #define ES_AUTOHSCROLL 0x0080u
 #define ES_NUMBER 0x2000u
+#define EM_SETLIMITTEXT 0x00C5u
 #define WM_KEYDOWN 0x0100u
 #define VK_RETURN 0x0Du
 #define SRCCOPY 0x00CC0020u
@@ -178,7 +178,7 @@ static void drawLabelFont(HDC dc,const wchar_t *label,LZRect box,DWORD color,HGD
     HGDIOBJ prev=(HGDIOBJ)0;
     if(font)prev=SelectObject(dc,font);
     SetBkMode(dc,TRANSPARENT);SetTextColor(dc,color);
-    DrawTextW(dc,lz_text(label),-1,&r,align|DT_VCENTER|DT_SINGLELINE);
+    DrawTextW(dc,lz_text(label),-1,&r,align|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     if(font)SelectObject(dc,prev);
 }
 static void editorInvalidate(void) {
@@ -187,19 +187,35 @@ static void editorInvalidate(void) {
     if(g_editorLabels)InvalidateRect(g_editorLabels,(RECT*)0,0);
 }
 static void editorMeasureToolbar(void) {
-    e_toolbarW=e_w-32;
+    e_toolbarW=e_w-16;
     if(e_toolbarW>1060)e_toolbarW=1060;
-    if(e_toolbarW<510)e_toolbarW=510;
     e_toolbarX=(e_w-e_toolbarW)/2;
+    e_toolbarH=e_toolbarW<LZ_EDITOR_WIDE_TOOLBAR?255:215;
+    e_toolbarY=e_toolbarBottom?e_h-e_toolbarH-8:8;
+    if(e_toolbarY<0)e_toolbarY=0;
 }
+enum {
+    EDITOR_SPLIT_COLUMNS,EDITOR_SPLIT_ROWS,EDITOR_MERGE,EDITOR_RESET,EDITOR_SAVE,
+    EDITOR_CANCEL,EDITOR_SIZE,EDITOR_MOVE,EDITOR_BUTTON_COUNT
+};
+static int editorSizeRow(void) {return e_toolbarW<LZ_EDITOR_WIDE_TOOLBAR?173:133;}
 static LZRect editorButton(int i) {
-    int gap=7;
-    int width=(e_toolbarW-48-gap*5)/6;
-    int x=e_toolbarX+24+(width+gap)*i;
-    return (LZRect){x,106,x+width,140};
+    if(i==EDITOR_MOVE)return (LZRect){e_toolbarW-140,10,e_toolbarW-12,42};
+    if(i==EDITOR_SIZE) {
+        int y=editorSizeRow();
+        return (LZRect){e_toolbarW-138,y,e_toolbarW-12,y+33};
+    }
+    int columns=e_toolbarW<LZ_EDITOR_WIDE_TOOLBAR?3:6;
+    int available=e_toolbarW-24;
+    int x=12+available*(i%columns)/columns;
+    int right=12+available*(i%columns+1)/columns-5;
+    int y=90+40*(i/columns);
+    return (LZRect){x,y,right,y+34};
 }
 static const wchar_t *editorButtonLabel(int i) {
-    static const wchar_t *labels[]={L"＋ 左右拆分",L"＋ 上下拆分",L"合并相邻区",L"恢复三栏",L"保存并启用",L"取消"};
+    static const wchar_t *labels[]={L"＋ 左右拆分",L"＋ 上下拆分",L"合并相邻区",L"重置为单区",
+        L"保存并启用",L"取消",L"应用尺寸"};
+    if(i==EDITOR_MOVE)return e_toolbarBottom?L"移到顶部":L"移到底部";
     return labels[i];
 }
 /* 1:1 physical-work-area editor: the editor's client area is exactly the
@@ -252,8 +268,11 @@ static int editorApplyAxisPx(int axis,int desired) {
     if(chosen<0)return 0;
     int total=axis==1?chosenParent.right-chosenParent.left:chosenParent.bottom-chosenParent.top;
     if(total<=0||desired<=0)return 0;
+    if(desired>total)desired=total;
     int firstPixels=first?desired:total-desired;
-    int ratio=(int)(((long long)firstPixels*10000+total/2)/total);
+    /* The zone calculation floors the cut position, so choose the first
+       basis-point value that reaches the requested pixel. */
+    int ratio=(int)(((long long)firstPixels*10000+total-1)/total);
     return lz_custom_set_ratio(&e_layout,chosen,ratio);
 }
 static void editorApplyPixelInputs(void) {
@@ -261,14 +280,22 @@ static void editorApplyPixelInputs(void) {
     if(!editorSelectedRect(&before)||!editorSelectedRectWithGap(&raw,0))return;
     GetWindowTextW(e_widthEdit,w,24);GetWindowTextW(e_heightEdit,h,24);
     int width=editorInt(w),height=editorInt(h);
-    if(width>=120 && width!=before.right-before.left)
-        editorApplyAxisPx(1,width+(raw.right-raw.left)-(before.right-before.left));
-    if(height>=80 && height!=before.bottom-before.top)
-        editorApplyAxisPx(2,height+(raw.bottom-raw.top)-(before.bottom-before.top));
-    copyW(e_notice,160,L"已按像素更新分割位置（受相邻区域最小占比限制）。");
+    if(width<120||height<80) {
+        copyW(e_notice,160,L"请输入至少 120 × 80 像素的尺寸。");
+        editorInvalidate();return;
+    }
+    int applied=1;
+    if(width!=before.right-before.left)
+        applied=editorApplyAxisPx(1,width+(raw.right-raw.left)-(before.right-before.left));
+    if(height!=before.bottom-before.top)
+        applied=editorApplyAxisPx(2,height+(raw.bottom-raw.top)-(before.bottom-before.top))&&applied;
+    LZRect after;
+    if(!applied)copyW(e_notice,160,L"要调整某个方向的尺寸，请先沿该方向拆分。");
+    else if(editorSelectedRect(&after)&&width==after.right-after.left&&height==after.bottom-after.top)
+        copyW(e_notice,160,L"已应用输入的尺寸。");
+    else copyW(e_notice,160,L"已显示实际尺寸，分割位置受比例和像素精度限制。");
     editorSyncDimensions();editorInvalidate();
 }
-static LZRect editorPixelButton(void) {return (LZRect){e_toolbarX+563,156,e_toolbarX+679,189};}
 static void editorDividerDraw(HDC dc,LZRect parent,int id,DWORD accent) {
     if(id<0||id>=e_layout.count)return;
     LZNode node=e_layout.nodes[id];
@@ -312,13 +339,6 @@ static void editorPaintInto(HDC dc) {
         drawBox(dc,(LZRect){z.left+1,z.top+1,z.right-1,z.bottom-1},fill,selected?accent:edge);
     }
     editorDividerDraw(dc,canvas,0,accent);
-    /* Glass surface participates in editor-wide transparency; its lettering
-       is painted separately in a color-keyed, fully opaque foreground HWND. */
-    editorMeasureToolbar();
-    drawBox(dc,(LZRect){e_toolbarX,LZ_EDITOR_TOOLS_Y,
-        e_toolbarX+e_toolbarW,LZ_EDITOR_TOOLS_Y+185},COLORREF_(255,251,253),edge);
-    if(e_notice[0])drawBox(dc,(LZRect){e_toolbarX+20,216,
-        e_toolbarX+e_toolbarW-20,250},COLORREF_(255,252,254),edge);
 }
 /* Opaque 1:1 zone labels above the translucent editor. Only the little
    labels draw pixels; the remainder uses color-key and passes mouse input
@@ -340,6 +360,15 @@ static void editorPaintLabels(HWND hwnd) {
         int bh=zh>=130?78:62;
         int cx=(z.left+z.right)/2,cy=(z.top+z.bottom)/2;
         LZRect card={cx-bw/2,cy-bh/2,cx+(bw+1)/2,cy+(bh+1)/2};
+        if(card.right>e_toolbarX&&card.left<e_toolbarX+e_toolbarW&&
+           card.bottom>e_toolbarY&&card.top<e_toolbarY+e_toolbarH) {
+            /* Keep the card in its own zone when the toolbar covers its center. */
+            int above=e_toolbarY-6-bh,below=e_toolbarY+e_toolbarH+6;
+            if(above>=z.top)card.top=above;
+            else if(below+bh<=z.bottom)card.top=below;
+            else continue;
+            card.bottom=card.top+bh;
+        }
         DWORD border=ids[i]==e_selected?accent:lz_mix(accent,bg,67);
         drawBox(dc,card,bg,border);
         wchar_t name[40];copyW(name,40,lz_text(L"区域 "));appendInt(name,40,i+1);
@@ -360,41 +389,41 @@ static LRESULT WINCALL editorLabelsProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) 
     if(msg==WM_DESTROY){g_editorLabels=(HWND)0;return 0;}
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
+static LZRect editorDimensionField(int axis) {
+    int width=(e_toolbarW-152)/2;
+    if(width>190)width=190;
+    int x=12+(axis-1)*width;
+    int y=editorSizeRow();
+    return (LZRect){x+32,y,x+width-6,y+33};
+}
 static void editorPaintToolbarContent(HDC dc) {
     DWORD accent=lz_accent(),edge=lz_mix(accent,COLORREF_(255,255,255),77);
     DWORD ink=COLORREF_(53,50,64),muted=COLORREF_(110,105,122);
-    /* All editor controls live in one centered floating toolbar. */
-    editorMeasureToolbar();
-    drawBox(dc,(LZRect){e_toolbarX+15,33,e_toolbarX+241,73},
-        COLORREF_(255,250,252),lz_mix(accent,COLORREF_(255,255,255),82));
-    drawLabelFont(dc,L"LiteZones  /  轻格",(LZRect){e_toolbarX+27,34,e_toolbarX+236,72},ink,g_titleFont,0);
-    wchar_t display[128];copyW(display,128,lz_text(L"显示器 "));appendInt(display,128,e_monitor+1);
-    appendW(display,128,lz_text(L"   ·   工作区 "));appendInt(display,128,e_w);
-    appendW(display,128,L" × ");appendInt(display,128,e_h);appendW(display,128,lz_text(L" px   ·   1:1 实际预览"));
-    drawLabelFont(dc,display,(LZRect){e_toolbarX+254,37,e_toolbarX+e_toolbarW-260,71},muted,e_smallFont,DT_CENTER);
-    drawLabelFont(dc,L"布局名称",(LZRect){e_toolbarX+e_toolbarW-256,39,e_toolbarX+e_toolbarW-164,73},muted,e_smallFont,0);
-    for(int i=0;i<6;i++) {
+    RECT all={0,0,e_toolbarW,e_toolbarH};
+    HBRUSH fill=CreateSolidBrush(COLORREF_(255,251,253));
+    HBRUSH border=CreateSolidBrush(edge);
+    FillRect(dc,&all,fill);FrameRect(dc,&all,border);
+    DeleteObject((HGDIOBJ)border);DeleteObject((HGDIOBJ)fill);
+    drawLabelFont(dc,L"自定义布局",(LZRect){12,10,e_toolbarW-150,42},ink,g_titleFont,0);
+    drawLabelFont(dc,L"布局名称",(LZRect){12,50,115,80},muted,e_smallFont,0);
+    drawBox(dc,(LZRect){116,50,e_toolbarW-12,80},COLORREF_(255,255,255),edge);
+    for(int i=0;i<EDITOR_BUTTON_COUNT;i++) {
         LZRect b=editorButton(i);
-        DWORD bg=i==4?accent:(i==5?COLORREF_(255,247,249):COLORREF_(255,251,253));
-        DWORD stroke=i==4?accent:lz_mix(accent,COLORREF_(255,255,255),58);
+        int primary=i==EDITOR_SAVE||i==EDITOR_SIZE||i==e_pressed;
+        DWORD bg=primary?accent:COLORREF_(255,251,253);
+        DWORD stroke=primary?accent:lz_mix(accent,COLORREF_(255,255,255),58);
         drawBox(dc,b,bg,stroke);
         drawLabelFont(dc,editorButtonLabel(i),b,
-            i==4?COLORREF_(255,255,255):ink,g_uiFont,DT_CENTER);
+            primary?COLORREF_(255,255,255):ink,g_uiFont,DT_CENTER);
     }
-    drawLabelFont(dc,L"当前区域",(LZRect){e_toolbarX+25,158,e_toolbarX+130,191},ink,g_uiFont,0);
-    drawLabelFont(dc,L"宽",(LZRect){e_toolbarX+140,158,e_toolbarX+171,189},muted,g_uiFont,0);
-    drawLabelFont(dc,L"高",(LZRect){e_toolbarX+348,158,e_toolbarX+380,189},muted,g_uiFont,0);
-    drawBox(dc,(LZRect){e_toolbarX+175,156,e_toolbarX+310,189},COLORREF_(255,255,255),edge);
-    drawBox(dc,(LZRect){e_toolbarX+386,156,e_toolbarX+521,189},COLORREF_(255,255,255),edge);
-    LZRect apply=editorPixelButton();drawBox(dc,apply,accent,accent);
-    drawLabelFont(dc,L"应用尺寸",apply,COLORREF_(255,255,255),g_uiFont,DT_CENTER);
-    if(e_toolbarW>820)
-        drawLabelFont(dc,L"Esc 退出 · 拖动粉色手柄实时调整",(LZRect){e_toolbarX+691,158,e_toolbarX+e_toolbarW-12,188},muted,e_smallFont,0);
-    if(e_notice[0]) {
-        LZRect hint={e_toolbarX+20,216,e_toolbarX+e_toolbarW-20,250};
-        drawBox(dc,hint,COLORREF_(255,252,254),edge);
-        drawLabelFont(dc,e_notice,hint,muted,e_smallFont,DT_CENTER);
+    for(int axis=1;axis<=2;axis++) {
+        LZRect field=editorDimensionField(axis);
+        drawLabelFont(dc,axis==1?L"宽":L"高",
+            (LZRect){field.left-32,field.top,field.left,field.bottom},muted,g_uiFont,DT_CENTER);
+        drawBox(dc,field,COLORREF_(255,255,255),edge);
     }
+    LZRect hint={12,editorSizeRow()+36,e_toolbarW-12,e_toolbarH-5};
+    drawLabelFont(dc,e_notice,hint,muted,e_smallFont,0);
 }
 
 static void editorReleaseBuffer(void) {
@@ -434,63 +463,84 @@ static int editorHitZone(int x,int y) {
     int z=lz_pick_zone(area,zones,count,x,y);
     return z>=0?ids[z]:-1;
 }
-static void editorPositionName(void) {
+static void editorPositionTools(void) {
     editorMeasureToolbar();
-    if(e_nameEdit)MoveWindow(e_nameEdit,e_toolbarW-154,41-LZ_EDITOR_TOOLS_Y,131,27,1);
-    if(e_widthEdit)MoveWindow(e_widthEdit,179,159-LZ_EDITOR_TOOLS_Y,128,27,1);
-    if(e_heightEdit)MoveWindow(e_heightEdit,390,159-LZ_EDITOR_TOOLS_Y,128,27,1);
+    if(e_nameEdit)MoveWindow(e_nameEdit,120,53,e_toolbarW-136,24,1);
+    HWND fields[]={e_widthEdit,e_heightEdit};
+    for(int i=0;i<2;i++) {
+        LZRect field=editorDimensionField(i+1);
+        if(fields[i])MoveWindow(fields[i],field.left+4,field.top+4,field.right-field.left-8,25,1);
+    }
     if(e_monitor>=0 && e_monitor<g_displayCount) {
         RECT r=g_displays[e_monitor].work;
         if(g_editorLabels)MoveWindow(g_editorLabels,r.left,r.top,e_w,e_h,1);
-        if(g_editorTools)MoveWindow(g_editorTools,r.left+e_toolbarX,r.top+LZ_EDITOR_TOOLS_Y,
-                                   e_toolbarW,LZ_EDITOR_TOOLS_H,1);
+        if(g_editorTools)SetWindowPos(g_editorTools,(HWND)(INT_PTR)-1,
+            r.left+e_toolbarX,r.top+e_toolbarY,e_toolbarW,e_toolbarH,SWP_NOACTIVATE);
     }
 }
-static int editorHandleToolbarClick(int x,int y) {
-        for(int i=0;i<6;i++) {
-            LZRect b=editorButton(i);
-            if(x<b.left||x>=b.right||y<b.top||y>=b.bottom)continue;
-            if(i==0||i==1) {
-                int selected=e_selected;
-                if(lz_custom_split(&e_layout,selected,i==0?1:2)) {
-                    e_selected=e_layout.nodes[selected].left;
-                    copyW(e_notice,160,L"已拆分。可以拖动粉色手柄调整比例。");
-                } else copyW(e_notice,160,L"最多 12 区域；请先选择未拆分的小区域。");
-            } else if(i==2) {
-                if(lz_custom_merge(&e_layout,e_selected)) {
-                    e_selected=editorFirstLeaf();
-                    copyW(e_notice,160,L"两个同级区域已合并。");
-                } else copyW(e_notice,160,L"只能合并同一分割线两侧的两个完整区域。");
-            } else if(i==3) {
-                lz_custom_default(&e_layout);e_selected=editorFirstLeaf();
-                copyW(e_notice,160,L"已重置为 25% / 50% / 25%，保存后生效。");
-            } else if(i==4){if(editorApply())DestroyWindow(g_editor);return 1;}
-            else {DestroyWindow(g_editor);return 1;}
-            editorSyncDimensions();editorInvalidate();return 1;
-        }
-        LZRect pixelButton=editorPixelButton();
-        if(x>=pixelButton.left&&x<pixelButton.right&&y>=pixelButton.top&&y<pixelButton.bottom) {
-            editorApplyPixelInputs();return 1;
-        }
-    return 0;
+static int editorHitButton(int x,int y) {
+    for(int i=0;i<EDITOR_BUTTON_COUNT;i++) {
+        LZRect b=editorButton(i);
+        if(x>=b.left&&x<b.right&&y>=b.top&&y<b.bottom)return i;
+    }
+    return -1;
+}
+static void editorHandleToolbarClick(int button) {
+    if(button==EDITOR_SAVE){if(editorApply())DestroyWindow(g_editor);return;}
+    if(button==EDITOR_CANCEL){DestroyWindow(g_editor);return;}
+    if(button==EDITOR_SIZE){editorApplyPixelInputs();return;}
+    if(button==EDITOR_MOVE) {
+        e_toolbarBottom=!e_toolbarBottom;
+        editorPositionTools();
+        editorInvalidate();
+        return;
+    }
+    if(button==EDITOR_SPLIT_COLUMNS||button==EDITOR_SPLIT_ROWS) {
+        int leaf=lz_custom_split(&e_layout,e_selected,button==EDITOR_SPLIT_COLUMNS?1:2);
+        if(leaf>=0) {
+            e_selected=leaf;
+            copyW(e_notice,160,L"已拆分。可以拖动粉色手柄调整比例。");
+        } else copyW(e_notice,160,L"最多可设置 12 个区域。");
+    } else if(button==EDITOR_MERGE) {
+        int leaf=lz_custom_merge(&e_layout,e_selected);
+        if(leaf>=0) {
+            e_selected=leaf;
+            copyW(e_notice,160,L"两个同级区域已合并。");
+        } else copyW(e_notice,160,L"请选择分割线一侧的完整区域，或重置为单区。");
+    } else if(button==EDITOR_RESET) {
+        e_layout=(LZCustom){1,{{0,0,0,5000}}};
+        e_selected=0;
+        copyW(e_notice,160,L"已重置为单区，保存后生效。");
+    }
+    e_hoverDivider=-1;
+    editorSyncDimensions();
+    editorInvalidate();
 }
 static LRESULT WINCALL editorToolsProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
-    (void)wp;
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_PAINT) {
         PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);
-        HBRUSH key=CreateSolidBrush(COLORREF_(255,0,255));
-        RECT r={0,0,e_toolbarW,LZ_EDITOR_TOOLS_H};FillRect(dc,&r,key);DeleteObject(key);
-        POINT before={0,0};
-        SetViewportOrgEx(dc,-e_toolbarX,-LZ_EDITOR_TOOLS_Y,&before);
         editorPaintToolbarContent(dc);
-        SetViewportOrgEx(dc,before.x,before.y,(POINT*)0);
         EndPaint(hwnd,&ps);return 0;
     }
+    if(msg==WM_LBUTTONDOWN) {
+        e_pressed=editorHitButton((short)(lp&65535),(short)((lp>>16)&65535));
+        if(e_pressed>=0){SetCapture(hwnd);InvalidateRect(hwnd,(RECT*)0,0);}
+        return 0;
+    }
     if(msg==WM_LBUTTONUP) {
-        int x=(short)(lp&65535)+e_toolbarX;
-        int y=(short)((lp>>16)&65535)+LZ_EDITOR_TOOLS_Y;
-        editorHandleToolbarClick(x,y);return 0;
+        if(e_pressed>=0) {
+            int pressed=e_pressed;
+            e_pressed=-1;
+            ReleaseCapture();
+            InvalidateRect(hwnd,(RECT*)0,0);
+            if(pressed==editorHitButton((short)(lp&65535),(short)((lp>>16)&65535)))
+                editorHandleToolbarClick(pressed);
+        }
+        return 0;
+    }
+    if(msg==WM_CAPTURECHANGED) {
+        e_pressed=-1;InvalidateRect(hwnd,(RECT*)0,0);return 0;
     }
     if(msg==WM_KEYDOWN&&wp==VK_ESCAPE){DestroyWindow(g_editor);return 0;}
     if(msg==WM_CLOSE){if(g_editor)DestroyWindow(g_editor);return 0;}
@@ -498,15 +548,19 @@ static LRESULT WINCALL editorToolsProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
 static LRESULT WINCALL editorProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
-    (void)wp;
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_SIZE) {
         RECT r;if(GetClientRect(hwnd,&r)){e_w=r.right;e_h=r.bottom;}
-        editorPositionName();
+        editorPositionTools();
         InvalidateRect(hwnd,(RECT*)0,0);return 0;
     }
     if(msg==WM_PAINT){editorPaint(hwnd);return 0;}
-    if(msg==WM_TIMER && wp==53) {KillTimer(hwnd,53);e_pendingPaint=0;InvalidateRect(hwnd,(RECT*)0,0);return 0;}
+    if(msg==WM_TIMER && wp==53) {
+        KillTimer(hwnd,53);e_pendingPaint=0;
+        InvalidateRect(hwnd,(RECT*)0,0);
+        if(g_editorLabels)InvalidateRect(g_editorLabels,(RECT*)0,0);
+        return 0;
+    }
     if(msg==WM_KEYDOWN && wp==VK_ESCAPE) {DestroyWindow(hwnd);return 0;}
     if(msg==WM_LBUTTONDOWN) {
         int x=(short)(lp&65535),y=(short)((lp>>16)&65535);
@@ -530,7 +584,10 @@ static LRESULT WINCALL editorProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
                 int proposed=(int)(((long long)numerator*10000+denominator/2)/denominator);
                 if(proposed!=node->ratio) {
                     lz_custom_set_ratio(&e_layout,e_divider,proposed);
-                    if(!e_pendingPaint) {e_pendingPaint=1;SetTimer(hwnd,53,12,(void*)0);}
+                    if(!e_pendingPaint) {
+                        e_pendingPaint=SetTimer(hwnd,53,12,(void*)0)!=0;
+                        if(!e_pendingPaint)editorInvalidate();
+                    }
                 }
             }
             return 0;
@@ -546,7 +603,10 @@ static LRESULT WINCALL editorProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         if(e_divider>=0){e_divider=-1;ReleaseCapture();editorSyncDimensions();editorInvalidate();}
         return 0;
     }
-    if(msg==WM_CAPTURECHANGED){e_divider=-1;return 0;}
+    if(msg==WM_CAPTURECHANGED) {
+        if(e_divider>=0){e_divider=-1;editorSyncDimensions();editorInvalidate();}
+        return 0;
+    }
     if(msg==WM_CLOSE){DestroyWindow(hwnd);return 0;}
     if(msg==WM_DESTROY) {
         KillTimer(hwnd,53);e_pendingPaint=0;
@@ -562,19 +622,21 @@ static LRESULT WINCALL editorProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
 }
 static void openEditor(int monitor) {
     if(monitor<0||monitor>=g_displayCount)return;
-    if(g_editor){SetForegroundWindow(g_editor);return;}
+    if(g_editor){SetForegroundWindow(g_editorTools?g_editorTools:g_editor);return;}
     e_monitor=monitor;e_profile=g_displays[monitor].activeProfile;
     e_layout=g_displays[monitor].profiles[e_profile];
     if(!lz_custom_validate(&e_layout))lz_custom_default(&e_layout);
-    e_selected=1;e_divider=-1;e_hoverDivider=-1;e_pendingPaint=0;
-    copyW(e_notice,160,L"实时、按屏幕像素编辑。按 Esc 或“取消”退出。");
+    e_selected=editorFirstLeaf();e_divider=-1;e_hoverDivider=-1;e_pendingPaint=0;
+    e_toolbarBottom=0;e_pressed=-1;
+    copyW(e_notice,160,L"点击预览选择区域，拖动粉色手柄调整分割线。");
     RECT work=g_displays[monitor].work;
     int width=work.right-work.left,height=work.bottom-work.top;
     /* The whole editor spans the display's usable desktop, exactly 1:1. */
     g_editor=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED,kClassEditor,lz_text(L"LiteZones · 自定义分屏布局"),
-      WS_POPUP|WS_CLIPCHILDREN,work.left,work.top,width,height,
+      WS_POPUP,work.left,work.top,width,height,
       (HWND)0,(HMENU)0,g_instance,(void*)0);
     if(!g_editor){e_monitor=-1;return;}
+    clearDrag();
     e_w=width;e_h=height;
     e_smallFont=CreateFontW(-16,0,0,0,500,0,0,0,1,0,0,5,0,L"Segoe UI");
     e_zoneNameFont=CreateFontW(-17,0,0,0,600,0,0,0,1,0,0,5,0,L"Segoe UI");
@@ -583,15 +645,16 @@ static void openEditor(int monitor) {
     g_editorLabels=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_LAYERED|
         WS_EX_TRANSPARENT|WS_EX_NOACTIVATE,kClassEditorLabels,lz_text(L"LiteZones · 区域标签"),
         WS_POPUP,work.left,work.top,width,height,
-        (HWND)0,(HMENU)0,g_instance,(void*)0);
+        g_editor,(HMENU)0,g_instance,(void*)0);
     if(!g_editorLabels){DestroyWindow(g_editor);return;}
     SetLayeredWindowAttributes(g_editorLabels,COLORREF_(255,0,255),255,LWA_COLORKEY);
-    g_editorTools=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_LAYERED,
-        kClassEditorTools,lz_text(L"LiteZones · 编辑工具栏"),WS_POPUP,
-        work.left+e_toolbarX,work.top+LZ_EDITOR_TOOLS_Y,e_toolbarW,LZ_EDITOR_TOOLS_H,
-        (HWND)0,(HMENU)0,g_instance,(void*)0);
+    /* Owned popups stay above the preview when it receives focus. The
+       toolbar uses normal child-window painting and hit testing. */
+    g_editorTools=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,
+        kClassEditorTools,lz_text(L"LiteZones · 编辑工具栏"),WS_POPUP|WS_CLIPCHILDREN,
+        work.left+e_toolbarX,work.top+e_toolbarY,e_toolbarW,e_toolbarH,
+        g_editor,(HMENU)0,g_instance,(void*)0);
     if(!g_editorTools){DestroyWindow(g_editor);return;}
-    SetLayeredWindowAttributes(g_editorTools,COLORREF_(255,0,255),255,LWA_COLORKEY);
     e_nameEdit=CreateWindowExW(0,L"EDIT",g_displays[monitor].profileNames[e_profile],
         WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
         0,0,100,27,g_editorTools,(HMENU)0,g_instance,(void*)0);
@@ -601,13 +664,17 @@ static void openEditor(int monitor) {
     e_heightEdit=CreateWindowExW(0,L"EDIT",L"",
         WS_CHILD|WS_VISIBLE|ES_NUMBER,
         0,0,100,27,g_editorTools,(HMENU)0,g_instance,(void*)0);
-    if(e_nameEdit)SendMessageW(e_nameEdit,WM_SETFONT,(WPARAM)g_uiFont,1);
-    if(e_widthEdit)SendMessageW(e_widthEdit,WM_SETFONT,(WPARAM)g_uiFont,1);
-    if(e_heightEdit)SendMessageW(e_heightEdit,WM_SETFONT,(WPARAM)g_uiFont,1);
-    editorPositionName();
+    if(!e_nameEdit||!e_widthEdit||!e_heightEdit){DestroyWindow(g_editor);return;}
+    SendMessageW(e_nameEdit,WM_SETFONT,(WPARAM)g_uiFont,1);
+    SendMessageW(e_nameEdit,EM_SETLIMITTEXT,63,0);
+    SendMessageW(e_widthEdit,WM_SETFONT,(WPARAM)g_uiFont,1);
+    SendMessageW(e_widthEdit,EM_SETLIMITTEXT,7,0);
+    SendMessageW(e_heightEdit,WM_SETFONT,(WPARAM)g_uiFont,1);
+    SendMessageW(e_heightEdit,EM_SETLIMITTEXT,7,0);
+    editorPositionTools();
     editorSyncDimensions();
-    SetLayeredWindowAttributes(g_editor,0,(BYTE)g_overlayOpacity,LWA_ALPHA);
-    ShowWindow(g_editor,SW_SHOW);
+    SetLayeredWindowAttributes(g_editor,0,(BYTE)(g_overlayOpacity?g_overlayOpacity:1),LWA_ALPHA);
+    ShowWindow(g_editor,SW_SHOWNOACTIVATE);
     ShowWindow(g_editorLabels,SW_SHOWNOACTIVATE);
     ShowWindow(g_editorTools,SW_SHOW);
     SetForegroundWindow(g_editorTools);

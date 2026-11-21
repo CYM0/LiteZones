@@ -1,4 +1,4 @@
-# LiteZones 1.0.0 (轻格)
+# LiteZones 1.1.0 (轻格)
 
 [English](README.en.md) | [简体中文](README.md)
 
@@ -6,7 +6,11 @@
 
 LiteZones (轻格) is a lightweight desktop window manager that arranges application windows into reusable screen zones with a quick Shift-and-drag gesture. Use the notification-area menu to manage layouts and appearance.
 
-**This software and this page were created entirely by AI.**
+### What's new in 1.1.0
+
+- Turn snapping on or off for each display. LiteZones remembers the setting after restart.
+- Fixed an issue where the layout preview could cover the editor toolbar and block clicks. The toolbar can now move to the top or bottom of the screen.
+- Improved left/right and top/bottom splits, merging, and resizing by pixel dimensions. Reset to a single zone and split it into up to 12 zones.
 
 ### Features
 
@@ -27,11 +31,12 @@ LiteZones (轻格) is a lightweight desktop window manager that arranges applica
 
 Right-click the notification-area icon to select a display and layout, edit custom layouts, change appearance, switch language, or exit. Drag a managed window out of its zone without Shift to detach it; by default, it returns to its original size.
 
+If another tool manages a display, open that display's submenu and uncheck **Snap on this display**. LiteZones remembers the setting and leaves window position and size alone when you drop a window on that display.
+
 ### Settings and compatibility
 
-LiteZones saves layouts, appearance, and language preferences in %APPDATA%\LiteZones\settings.ini. Window assignments last until LiteZones closes or the display arrangement changes. The app runs locally without an account or network connection. Some elevated, protected, full-screen, or minimum-size-restricted windows may not be repositioned precisely.
+LiteZones saves layouts, per-display snapping, appearance, and language preferences in %APPDATA%\LiteZones\settings.ini. Window assignments last until LiteZones closes or the display arrangement changes. The app runs locally without an account or network connection. Some elevated, protected, full-screen, or minimum-size-restricted windows may not be repositioned precisely.
 
 ### License
 
 LiteZones is provided under the MIT License. See LICENSE.
-

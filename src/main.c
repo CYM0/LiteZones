@@ -1,6 +1,7 @@
-/* LiteZones 1.0.0: self-contained Win32 x64 snap-zone assistant for Windows 10.
+/* LiteZones: self-contained Win32 x64 snap-zone assistant for Windows 10.
    No dependency on the C runtime, frameworks, browser engines, services, or drivers. */
 #include "winlite.h"
+#include "version.h"
 #include "geometry.h"
 #include "zone_book.h"
 #include "zone_zorder.h"
@@ -48,6 +49,8 @@
 #define VK_SHIFT 0x10
 #define VK_ESCAPE 0x1B
 #define MONITOR_DEFAULTTONEAREST 2
+#define EDD_GET_DEVICE_INTERFACE_NAME 1
+#define DISPLAY_DEVICE_ACTIVE 1
 #define LWA_COLORKEY 0x0001
 #define LWA_ALPHA 0x0002
 #define DT_CENTER 0x0001
@@ -97,6 +100,7 @@
 #define CMD_SEAM_TUNE 1141
 #define CMD_LAYOUT_BASE 2000
 #define CMD_PROFILE_BASE 4000
+#define CMD_MONITOR_SNAP_BASE 4500
 #define CMD_RESTORE 1020
 #define LZ_PROFILE_COUNT 12
 #define CMD_EDITOR_BASE 3000
@@ -129,8 +133,9 @@ typedef struct {
     HMONITOR handle;
     RECT screen, work;
     wchar_t device[32], configKey[32];
+    wchar_t snapKey[128];
     HWND overlay;
-    int layout, count;
+    int layout, count, snapEnabled;
     LZCustom profiles[LZ_PROFILE_COUNT];
     wchar_t profileNames[LZ_PROFILE_COUNT][64];
     int activeProfile;
@@ -273,6 +278,10 @@ static int indexOfMonitor(HMONITOR m) {
 static int monitorUnderCursor(POINT p) {
     return indexOfMonitor(MonitorFromPoint(p,MONITOR_DEFAULTTONEAREST));
 }
+static int windowOnExcludedDisplay(HWND hwnd) {
+    int mi=indexOfMonitor(MonitorFromWindow(hwnd,0));
+    return mi>=0 && !g_displays[mi].snapEnabled;
+}
 static LZRect workRect(Display *d) {
     LZRect r={d->work.left,d->work.top,d->work.right,d->work.bottom}; return r;
 }
@@ -345,6 +354,19 @@ static void destroyDisplays(void) {
     g_displayCount=0;
 }
 static void loadCustom(Display *d);
+static void loadMonitorSnapSetting(Display *d) {
+    DISPLAY_DEVICEW monitor={0};
+    copyW(d->snapKey,128,d->configKey);
+    for(DWORD i=0;;i++) {
+        monitor.cb=sizeof(monitor);
+        if(!EnumDisplayDevicesW(d->device,i,&monitor,EDD_GET_DEVICE_INTERFACE_NAME))break;
+        if((monitor.StateFlags&DISPLAY_DEVICE_ACTIVE)&&monitor.DeviceID[0]) {
+            copyW(d->snapKey,128,monitor.DeviceID);
+            break;
+        }
+    }
+    d->snapEnabled=GetPrivateProfileIntW(L"MonitorSnapping",d->snapKey,1,g_configPath)!=0;
+}
 static BOOL WINCALL enumDisplay(HMONITOR h,HDC dc,RECT *r,LPARAM value) {
     MONITORINFOEXW info;
     Display *d;
@@ -355,6 +377,7 @@ static BOOL WINCALL enumDisplay(HMONITOR h,HDC dc,RECT *r,LPARAM value) {
     d=&g_displays[g_displayCount];memset(d,0,sizeof(*d));
     d->handle=h;d->screen=info.rcMonitor;d->work=info.rcWork;
     copyW(d->device,32,info.szDevice);deviceKey(d);
+    loadMonitorSnapSetting(d);
     d->layout=(int)GetPrivateProfileIntW(L"Monitors",d->configKey,5,g_configPath);
     if(d->layout<0||d->layout>=LZ_LAYOUT_COUNT) d->layout=5;
     loadCustom(d);
@@ -362,18 +385,22 @@ static BOOL WINCALL enumDisplay(HMONITOR h,HDC dc,RECT *r,LPARAM value) {
     g_displayCount++;
     return 1;
 }
+static void createSnapOverlay(Display *d) {
+    d->overlay=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_NOACTIVATE,
+        kClassOverlay,L"",WS_POPUP,d->work.left,d->work.top,
+        d->work.right-d->work.left,d->work.bottom-d->work.top,
+        (HWND)0,(HMENU)0,g_instance,(void*)0);
+    if(d->overlay && !SetLayeredWindowAttributes(d->overlay,COLORREF_(255,0,255),
+                                               (BYTE)g_overlayOpacity,LWA_COLORKEY|LWA_ALPHA)) {
+        DestroyWindow(d->overlay);
+        d->overlay=(HWND)0;
+    }
+}
 static void initDisplays(void) {
-    int i;
     clearDrag();destroyDisplays();
     EnumDisplayMonitors((HDC)0,(const RECT*)0,enumDisplay,0);
-    for(i=0;i<g_displayCount;i++) {
-        Display *d=&g_displays[i];
-        d->overlay=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_NOACTIVATE,
-                                  kClassOverlay,L"",WS_POPUP,
-                                  d->work.left,d->work.top,d->work.right-d->work.left,d->work.bottom-d->work.top,
-                                  (HWND)0,(HMENU)0,g_instance,(void*)0);
-        if(d->overlay) SetLayeredWindowAttributes(d->overlay,COLORREF_(255,0,255),(BYTE)g_overlayOpacity,LWA_COLORKEY|LWA_ALPHA);
-    }
+    for(int i=0;i<g_displayCount;i++)
+        if(g_displays[i].snapEnabled)createSnapOverlay(&g_displays[i]);
 }
 static int isEligible(HWND hwnd) {
     RECT wr;
@@ -399,7 +426,7 @@ static BOOL moveToZone(HWND hwnd,Display *d,int zone) {
     RECT outer,visible;
     LZRect t;
     int x,y,w,h;
-    if(!IsWindow(hwnd) || zone<0 ||zone>=d->count) return 0;
+    if(!d->snapEnabled || !IsWindow(hwnd) || zone<0 ||zone>=d->count) return 0;
     if(IsZoomed(hwnd)) ShowWindow(hwnd,SW_RESTORE);
     if(!GetWindowRect(hwnd,&outer)) return 0;
     t=d->zones[zone];
@@ -455,6 +482,7 @@ static BOOL moveToZone(HWND hwnd,Display *d,int zone) {
    moveToZone always starts with the original zone geometry. */
 static void reapplyManagedZones(void) {
     if(g_drag.active)return;
+    pruneDeadPlacements();
     for(int i=0;i<MAX_PLACEMENTS;i++) {
         LZMember *p=&g_book.members[i];
         if(!p->id)continue;
@@ -487,13 +515,17 @@ static void finishDrag(void) {
     POINT began=g_drag.start;
     POINT release={0,0};
     BOOL hasCursor=GetCursorPos(&release);
-    if(permitted && hasCursor) {
+    if(hasCursor) {
         mi=monitorUnderCursor(release);
-        if(mi>=0) zi=lz_pick_zone(workRect(&g_displays[mi]),g_displays[mi].zones,
+        if(permitted && mi>=0 && g_displays[mi].snapEnabled)
+            zi=lz_pick_zone(workRect(&g_displays[mi]),g_displays[mi].zones,
                                     g_displays[mi].count,release.x,release.y);
     }
     clearDrag();
-    if(permitted && mi>=0 && zi>=0) {
+    if(!wasCancelled && mi>=0 && !g_displays[mi].snapEnabled) {
+        /* Leave positioning to the other desktop tool on this display. */
+        forgetWindow(hwnd);
+    } else if(zi>=0) {
         snapWithExchange(hwnd,mi,zi,sourceMi,sourceZi,&previous);
     } else if(sourceMi>=0 && !wasCancelled) {
         /* Use the ownership identified at move-start; re-checking final
@@ -510,10 +542,9 @@ static void updateDrag(void) {
     /* Do not infer a resize from changing width or height: dragging a previously
        Windows-snapped window commonly restores its previous size mid-drag. */
     mi=monitorUnderCursor(p);
-    if(mi<0) {hideOverlays();g_drag.display=-1;g_drag.hovered=-1;return;}
     /* The modifier is LEVEL-triggered, not latched: releasing Shift hides
        the preview immediately (next 35 ms timer tick) and cancels snapping. */
-    if(!(GetAsyncKeyState(VK_SHIFT)&0x8000)) {
+    if(mi<0 || !g_displays[mi].snapEnabled || !(GetAsyncKeyState(VK_SHIFT)&0x8000)) {
         g_drag.armed=0;
         hideOverlays();g_drag.display=-1;g_drag.hovered=-1;
         return;
@@ -547,7 +578,7 @@ static void WINCALL eventHook(HWINEVENTHOOK hook,DWORD event,HWND hwnd,int idObj
     }
     if(event==EVENT_SYSTEM_MOVESIZESTART) {
         if(g_drag.active) clearDrag();
-        if(!g_enabled || !isEligible(hwnd) || !(GetAsyncKeyState(VK_LBUTTON)&0x8000)) return;
+        if(g_editor || !g_enabled || !isEligible(hwnd) || !(GetAsyncKeyState(VK_LBUTTON)&0x8000)) return;
         {
             POINT startPoint;
             if(GetCursorPos(&startPoint) && resizeHitTest(hwnd,startPoint)) return;
@@ -576,7 +607,7 @@ static void updateTray(void) {
 }
 static void showHelp(void) {
     if(g_languageEnglish) MessageBoxW(g_main,
-      L"LiteZones 1.0.0\n\n"
+      L"LiteZones " LZ_VERSION L"\n\n"
       L"1. Drag the title bar of a regular application window.\n"
       L"2. Hold Shift to preview the available zones.\n"
       L"3. Release the mouse over a zone to snap the window.\n\n"
@@ -584,6 +615,7 @@ static void showHelp(void) {
       L"Press Esc to cancel snapping.\n\n"
       L"Right-click the notification-area icon to:\n"
       L"· Choose a layout for each display and edit custom layouts\n"
+      L"· Toggle snapping for each display\n"
       L"· Swap managed windows or place another window in a zone\n"
       L"· Adjust spacing, appearance, or snapping settings\n"
       L"· Choose whether LiteZones starts with Windows\n"
@@ -592,7 +624,7 @@ static void showHelp(void) {
       L"Settings: %APPDATA%\\LiteZones\\settings.ini",
       L"LiteZones · User Guide",MB_OK);
     else MessageBoxW(g_main,
-      L"LiteZones 轻格 1.0.0\n\n"
+      L"LiteZones 轻格 " LZ_VERSION L"\n\n"
       L"① 用鼠标拖动普通程序窗口的标题栏。\n"
       L"② 按住 Shift，显示半透明布局预览。\n"
       L"③ 拖到目标区域，松开鼠标即可吸附。\n\n"
@@ -600,6 +632,7 @@ static void showHelp(void) {
       L"按 Esc 可取消当前吸附。\n\n"
       L"右键任务栏托盘中的图标：\n"
       L"· 为每台显示器独立选择布局并打开编辑器\n"
+      L"· 单独开启或关闭某台显示器的吸附\n"
       L"· 已入区窗口互换；外部窗口可覆盖现有区域\n"
       L"· 调整窗口间距、开启或暂停吸附\n"
       L"· 可选择是否随 Windows 自动启动\n\n"
@@ -622,6 +655,25 @@ static void menuAction(UINT command) {
         setConfigNumber(L"General",L"Enabled",g_enabled);
         if(!g_enabled) clearDrag();
         Shell_NotifyIconW(NIM_DELETE,&g_tray);updateTray();return;
+    }
+    if(command>=CMD_MONITOR_SNAP_BASE && command<CMD_MONITOR_SNAP_BASE+MAX_MONITORS) {
+        int mi=(int)(command-CMD_MONITOR_SNAP_BASE);
+        if(mi>=g_displayCount)return;
+        Display *d=&g_displays[mi];
+        int enabled=!d->snapEnabled;
+        if(!WritePrivateProfileStringW(L"MonitorSnapping",d->snapKey,enabled?L"1":L"0",g_configPath)) {
+            MessageBoxW(g_main,lz_text(L"无法保存此显示器的吸附设置。"),L"LiteZones",MB_OK|MB_ICONERROR);
+            return;
+        }
+        clearDrag();
+        d->snapEnabled=enabled;
+        if(enabled)createSnapOverlay(d);
+        else {
+            forgetMonitor(d->device);
+            if(d->overlay)DestroyWindow(d->overlay);
+            d->overlay=(HWND)0;
+        }
+        return;
     }
     if(command==CMD_STARTUP) {setStartup(!startupEnabled());return;}
     if(command==CMD_LANGUAGE) {
@@ -822,8 +874,12 @@ static int appMain(void) {
        Guidance is available from the tray menu when requested. */
     while(GetMessageW(&message,(HWND)0,0,0)>0) {
         /* Esc works even when a native text field owns keyboard focus. */
-        if(g_editor && message.message==0x0100u && message.wParam==0x1Bu) {
+        if(g_editor && message.message==WM_KEYDOWN && message.wParam==VK_ESCAPE) {
             DestroyWindow(g_editor);continue;
+        }
+        if(g_editor && message.message==WM_KEYDOWN && message.wParam==VK_RETURN &&
+           (message.hwnd==e_widthEdit||message.hwnd==e_heightEdit)) {
+            editorApplyPixelInputs();continue;
         }
         TranslateMessage(&message);DispatchMessageW(&message);
     }

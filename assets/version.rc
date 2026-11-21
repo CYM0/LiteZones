@@ -1,0 +1,27 @@
+#include "../src/version.h"
+
+1 VERSIONINFO
+FILEVERSION LZ_VERSION_NUMBERS
+PRODUCTVERSION LZ_VERSION_NUMBERS
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "LiteZones"
+            VALUE "FileVersion", LZ_VERSION
+            VALUE "OriginalFilename", "LiteZones.exe"
+            VALUE "ProductName", "LiteZones"
+            VALUE "ProductVersion", LZ_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

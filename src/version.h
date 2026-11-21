@@ -1,0 +1,7 @@
+#ifndef LITEZONES_VERSION_H
+#define LITEZONES_VERSION_H
+
+#define LZ_VERSION "1.1.0"
+#define LZ_VERSION_NUMBERS 1,1,0,0
+
+#endif

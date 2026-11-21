@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 2242)
-Total output lines: 187
-
 /* Minimal Win32 declarations. Keeping the executable free of SDK/CRT runtime dependencies.
    Target: Windows 10 x64, Unicode, MSVC x64 calling convention. */
 #ifndef LZ_WINLITE_H
@@ -55,6 +52,12 @@ typedef struct {
     HICON hIconSm;
 } WNDCLASSEXW;
 typedef struct { DWORD cbSize; RECT rcMonitor,rcWork; DWORD dwFlags; wchar_t szDevice[32]; } MONITORINFOEXW;
+typedef struct {
+    DWORD cb;
+    wchar_t DeviceName[32],DeviceString[128];
+    DWORD StateFlags;
+    wchar_t DeviceID[128],DeviceKey[128];
+} DISPLAY_DEVICEW;
 typedef struct { HDC hdc; BOOL fErase; RECT rcPaint; BOOL fRestore,fIncUpdate; BYTE rgbReserved[32]; } PAINTSTRUCT;
 typedef struct { HWND hwnd; UINT message; WPARAM wParam; LPARAM lParam; DWORD time; POINT pt; DWORD lPrivate; } MSG;
 typedef struct { DWORD Data1; WORD Data2,Data3; BYTE Data4[8]; } GUID;
@@ -80,7 +83,63 @@ typedef struct {
     DWORD *lpCustColors; DWORD Flags; LPARAM lCustData;
     void *lpfnHook; const wchar_t *lpTemplateName;
 } CHOOSECOLORW;
-typedef char lz_assert…742 tokens truncated…NIMP BOOL WINCALL EnumDisplayMonitors(HDC,const RECT*,MONITORENUMPROC,LPARAM);
+typedef char lz_assert_choosecolor_size[(sizeof(CHOOSECOLORW)==72)?1:-1];
+/* Compile-time ABI size checks for 64-bit Windows structures. */
+typedef char lz_assert_rect_size[(sizeof(RECT)==16)?1:-1];
+typedef char lz_assert_point_size[(sizeof(POINT)==8)?1:-1];
+typedef char lz_assert_monitorinfoex_size[(sizeof(MONITORINFOEXW)==104)?1:-1];
+typedef char lz_assert_display_device_size[(sizeof(DISPLAY_DEVICEW)==840)?1:-1];
+typedef char lz_assert_msg_size[(sizeof(MSG)==48)?1:-1];
+typedef char lz_assert_class_size[(sizeof(WNDCLASSEXW)==80)?1:-1];
+typedef char lz_assert_notify_size[(sizeof(NOTIFYICONDATAW)==976)?1:-1];
+
+/* kernel32.dll */
+WINIMP void WINCALL ExitProcess(UINT);
+WINIMP DWORD WINCALL GetLastError(void);
+WINIMP WORD WINCALL GetUserDefaultUILanguage(void);
+WINIMP HMODULE WINCALL GetModuleHandleW(const wchar_t*);
+WINIMP void* WINCALL GetProcAddress(HMODULE,const char*);
+WINIMP HANDLE WINCALL CreateMutexW(void*,BOOL,const wchar_t*);
+WINIMP BOOL WINCALL CloseHandle(HANDLE);
+WINIMP DWORD WINCALL GetEnvironmentVariableW(const wchar_t*,wchar_t*,DWORD);
+WINIMP BOOL WINCALL CreateDirectoryW(const wchar_t*,void*);
+WINIMP UINT WINCALL GetPrivateProfileIntW(const wchar_t*,const wchar_t*,int,const wchar_t*);
+WINIMP BOOL WINCALL WritePrivateProfileStringW(const wchar_t*,const wchar_t*,const wchar_t*,const wchar_t*);
+WINIMP DWORD WINCALL GetModuleFileNameW(HMODULE,wchar_t*,DWORD);
+WINIMP DWORD WINCALL GetPrivateProfileStringW(const wchar_t*,const wchar_t*,const wchar_t*,wchar_t*,DWORD,const wchar_t*);
+/* user32.dll */
+WINIMP BOOL WINCALL SetProcessDPIAware(void);
+WINIMP unsigned short WINCALL RegisterClassExW(const WNDCLASSEXW*);
+WINIMP HWND WINCALL CreateWindowExW(DWORD,const wchar_t*,const wchar_t*,DWORD,int,int,int,int,HWND,HMENU,HINSTANCE,void*);
+WINIMP BOOL WINCALL DestroyWindow(HWND);
+WINIMP LRESULT WINCALL DefWindowProcW(HWND,UINT,WPARAM,LPARAM);
+WINIMP int WINCALL GetMessageW(MSG*,HWND,UINT,UINT);
+WINIMP BOOL WINCALL TranslateMessage(const MSG*);
+WINIMP LRESULT WINCALL DispatchMessageW(const MSG*);
+WINIMP void WINCALL PostQuitMessage(int);
+WINIMP BOOL WINCALL ShowWindow(HWND,int);
+WINIMP BOOL WINCALL SetWindowPos(HWND,HWND,int,int,int,int,UINT);
+WINIMP BOOL WINCALL GetWindowRect(HWND,RECT*);
+WINIMP BOOL WINCALL GetClientRect(HWND,RECT*);
+WINIMP HWND WINCALL SetCapture(HWND);
+WINIMP BOOL WINCALL ReleaseCapture(void);
+WINIMP BOOL WINCALL MoveWindow(HWND,int,int,int,int,BOOL);
+WINIMP int WINCALL GetWindowTextW(HWND,wchar_t*,int);
+WINIMP BOOL WINCALL SetWindowTextW(HWND,const wchar_t*);
+WINIMP LRESULT WINCALL SendMessageW(HWND,UINT,WPARAM,LPARAM);
+WINIMP BOOL WINCALL IsWindow(HWND);
+WINIMP HWND WINCALL GetForegroundWindow(void);
+WINIMP BOOL WINCALL IsWindowVisible(HWND);
+WINIMP BOOL WINCALL IsIconic(HWND);
+WINIMP BOOL WINCALL IsZoomed(HWND);
+WINIMP LONG_PTR WINCALL GetWindowLongPtrW(HWND,int);
+WINIMP BOOL WINCALL GetCursorPos(POINT*);
+WINIMP LRESULT WINCALL SendMessageTimeoutW(HWND,UINT,WPARAM,LPARAM,UINT,UINT,UINT_PTR*);
+WINIMP short WINCALL GetAsyncKeyState(int);
+WINIMP HMONITOR WINCALL MonitorFromPoint(POINT,DWORD);
+WINIMP HMONITOR WINCALL MonitorFromWindow(HWND,DWORD);
+WINIMP BOOL WINCALL EnumDisplayMonitors(HDC,const RECT*,MONITORENUMPROC,LPARAM);
+WINIMP BOOL WINCALL EnumDisplayDevicesW(const wchar_t*,DWORD,DISPLAY_DEVICEW*,DWORD);
 WINIMP BOOL WINCALL EnumWindows(BOOL (WINCALL *)(HWND,LPARAM),LPARAM);
 WINIMP BOOL WINCALL GetMonitorInfoW(HMONITOR,MONITORINFOEXW*);
 WINIMP UINT_PTR WINCALL SetTimer(HWND,UINT_PTR,UINT,void*);
@@ -134,4 +193,3 @@ WINIMP long WINCALL RegSetValueExW(HKEY,const wchar_t*,DWORD,DWORD,const BYTE*,D
 WINIMP long WINCALL RegDeleteValueW(HKEY,const wchar_t*);
 WINIMP long WINCALL RegCloseKey(HKEY);
 #endif
-
